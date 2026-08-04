@@ -89,3 +89,51 @@ class TestSelectResources:
     def test_validates_mutually_exclusive_params(self, oc_api):
         with pytest.raises(ValueError, match="Cannot specify both"):
             oc_api.select_resources("pod", namespace="default", all_namespaces=True)
+
+
+class TestCrdExists:
+    """Test crd_exists behavior."""
+
+    def test_cluster_wide_exists(self, oc_api):
+        oc_api.select_resources = Mock(return_value=[])
+
+        assert oc_api.crd_exists("clusteroperators") is True
+        oc_api.select_resources.assert_called_once_with("clusteroperators", timeout=30)
+
+    def test_namespaced_all_namespaces_exists(self, oc_api):
+        oc_api.select_resources = Mock(return_value=[])
+
+        assert oc_api.crd_exists("nodenetworkconfigurationpolicies", cluster_wide=False) is True
+        oc_api.select_resources.assert_called_once_with(
+            "nodenetworkconfigurationpolicies", all_namespaces=True, timeout=30
+        )
+
+    def test_namespaced_with_namespace_exists(self, oc_api):
+        oc_api.select_resources = Mock(return_value=[])
+
+        assert oc_api.crd_exists("nodenetworkconfigurationpolicies", cluster_wide=False, namespace="default") is True
+        oc_api.select_resources.assert_called_once_with(
+            "nodenetworkconfigurationpolicies", namespace="default", timeout=30
+        )
+
+    def test_not_found_returns_false(self, oc_api):
+        oc_api.select_resources = Mock(
+            side_effect=OpenShiftPythonException("the server doesn't have a resource type")
+        )
+
+        assert oc_api.crd_exists("missing.example.com") is False
+
+    def test_no_matches_for_kind_returns_false(self, oc_api):
+        oc_api.select_resources = Mock(side_effect=OpenShiftPythonException("no matches for kind Foo"))
+
+        assert oc_api.crd_exists("foos.example.com", cluster_wide=False) is False
+
+    def test_unexpected_exception_propagates(self, oc_api):
+        oc_api.select_resources = Mock(side_effect=OpenShiftPythonException("connection timed out"))
+
+        with pytest.raises(OpenShiftPythonException, match="connection timed out"):
+            oc_api.crd_exists("clusteroperators")
+
+    def test_cluster_wide_with_namespace_raises(self, oc_api):
+        with pytest.raises(ValueError, match="Cannot specify 'namespace' when cluster_wide=True"):
+            oc_api.crd_exists("clusteroperators", namespace="default")

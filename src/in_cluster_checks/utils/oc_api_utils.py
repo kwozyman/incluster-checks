@@ -433,6 +433,55 @@ class OcApiUtils:
 
             return result
 
+    def crd_exists(
+        self,
+        resource_type: str,
+        cluster_wide: bool = True,
+        namespace: str | None = None,
+        timeout: int = 30,
+    ) -> bool:
+        """Check whether a CRD / API resource type is available in the cluster.
+
+        Probes the resource kind via ``select_resources``. Missing-kind errors
+        (CRD not installed) return False; unexpected failures are re-raised.
+
+        Args:
+            resource_type: Resource type to probe (e.g., ``"nodenetworkconfigurationpolicies"``
+                or ``"policies.policy.open-cluster-management.io"``).
+            cluster_wide: If True (default), probe as a cluster-scoped resource.
+                If False, probe as a namespaced resource.
+            namespace: Namespace to probe when ``cluster_wide`` is False. If None,
+                searches all namespaces.
+            timeout: Timeout in seconds (default: 30).
+
+        Returns:
+            True if the resource type exists, False if the CRD/kind is not found.
+
+        Raises:
+            ValueError: If ``cluster_wide`` is True and ``namespace`` is set.
+            OpenShiftPythonException: For unexpected errors (timeouts, auth, etc.).
+        """
+        if cluster_wide and namespace:
+            raise ValueError("Cannot specify 'namespace' when cluster_wide=True")
+
+        try:
+            if cluster_wide:
+                self.select_resources(resource_type, timeout=timeout)
+            elif namespace:
+                self.select_resources(resource_type, namespace=namespace, timeout=timeout)
+            else:
+                self.select_resources(resource_type, all_namespaces=True, timeout=timeout)
+            return True
+        except oc.OpenShiftPythonException as e:
+            error_msg = str(e).lower()
+            if (
+                "not found" in error_msg
+                or "no matches for kind" in error_msg
+                or "doesn't have a resource type" in error_msg
+            ):
+                return False
+            raise
+
     def get_pods(self, namespace: str = None, labels: dict = None, timeout: int = 30) -> list:
         """Get pods from namespace with optional label filtering.
 
