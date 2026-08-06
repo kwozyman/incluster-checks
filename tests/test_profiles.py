@@ -450,3 +450,11 @@ class TestGlobalConfig:
         assert "spectrum-x" in spectrum_x_deps
         assert "general" in spectrum_x_deps
         assert len(spectrum_x_deps) == 2
+
+    def test_llm_d_xks_profile_resolves_correctly(self):
+        """Test that llm-d-xks profile resolves as a leaf (no includes)."""
+        global_config.set_config(active_profile_val="llm-d-xks")
+        assert global_config.active_profile == "llm-d-xks"
+
+        llm_d_xks_deps = global_config.profiles_hierarchy["llm-d-xks"]
+        assert llm_d_xks_deps == {"llm-d-xks"}

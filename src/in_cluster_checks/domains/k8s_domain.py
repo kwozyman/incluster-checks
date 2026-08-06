@@ -8,6 +8,7 @@ Based on HealthChecks/flows/K8s/k8s_components/K8s_flow.py
 from typing import List
 
 from in_cluster_checks.core.domain import RuleDomain
+from in_cluster_checks.rules.k8s.cert_manager_validations import VerifyCertManagerInstalled
 from in_cluster_checks.rules.k8s.k8s_validations import (  # AllPodsReadyAndRunning disabled (PDRIVE-806)
     AllDeploymentsAvailable,
     AllStatefulsetsReady,
@@ -25,6 +26,7 @@ from in_cluster_checks.rules.k8s.k8s_validations import (  # AllPodsReadyAndRunn
     VerifyNetworkDiagnosticsDisabled,
     VerifyWebConsoleDisabled,
 )
+from in_cluster_checks.rules.k8s.sail_operator_validations import VerifySailOperatorInstalled
 from in_cluster_checks.rules.k8s.subscription_operator_validations import (
     VerifyAcmOperatorHealth,
     VerifyFarContainerNonRoot,
@@ -74,4 +76,6 @@ class K8sValidationDomain(RuleDomain):
             VerifyWorkloadAvailabilityNamespaceHealth,
             VerifyFARControllerReplicas,
             VerifyFarContainerNonRoot,
+            VerifyCertManagerInstalled,
+            VerifySailOperatorInstalled,
         ]

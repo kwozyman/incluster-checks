@@ -24,4 +24,7 @@ profiles:
   # --- Layer 4: Specific Implementations ---
   nokia-qa:
     include: [rh-nokia]
+  llm-d-xks:
+    description: "llm-d validation profile for XKS deployments"
+    include: []
 

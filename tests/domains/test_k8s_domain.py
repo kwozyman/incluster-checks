@@ -1,6 +1,7 @@
 """Tests for K8s validation domain."""
 
 from in_cluster_checks.domains.k8s_domain import K8sValidationDomain
+from in_cluster_checks.rules.k8s.cert_manager_validations import VerifyCertManagerInstalled
 from in_cluster_checks.rules.k8s.k8s_validations import (
     InfraPodsReadyAndRunning,
     NodesAreReady,
@@ -15,6 +16,7 @@ from in_cluster_checks.rules.k8s.k8s_validations import (
     VerifyNetworkDiagnosticsDisabled,
     VerifyWebConsoleDisabled,
 )
+from in_cluster_checks.rules.k8s.sail_operator_validations import VerifySailOperatorInstalled
 from in_cluster_checks.rules.k8s.subscription_operator_validations import (
     VerifyAcmOperatorHealth,
     VerifyFarContainerNonRoot,
@@ -35,7 +37,7 @@ def test_k8s_domain_rules():
     domain = K8sValidationDomain()
     rules = domain.get_rule_classes()
 
-    assert len(rules) == 20
+    assert len(rules) == 22
     assert InfraPodsReadyAndRunning in rules
     assert NodesAreReady in rules
     assert NodesCpuAndMemoryStatus in rules
@@ -53,3 +55,5 @@ def test_k8s_domain_rules():
     assert VerifyNfdPodRestartCount in rules
     assert VerifyAcmOperatorHealth in rules
     assert VerifyWorkloadAvailabilityNamespaceHealth in rules
+    assert VerifyCertManagerInstalled in rules
+    assert VerifySailOperatorInstalled in rules
