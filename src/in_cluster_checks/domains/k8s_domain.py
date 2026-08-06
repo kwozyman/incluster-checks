@@ -27,6 +27,7 @@ from in_cluster_checks.rules.k8s.k8s_validations import (  # AllPodsReadyAndRunn
     VerifyWebConsoleDisabled,
 )
 from in_cluster_checks.rules.k8s.kserve_validations import VerifyKServeInstalled
+from in_cluster_checks.rules.k8s.kuadrant_validations import VerifyKuadrantInstalled
 from in_cluster_checks.rules.k8s.sail_operator_validations import VerifySailOperatorInstalled
 from in_cluster_checks.rules.k8s.subscription_operator_validations import (
     VerifyAcmOperatorHealth,
@@ -80,4 +81,5 @@ class K8sValidationDomain(RuleDomain):
             VerifyCertManagerInstalled,
             VerifySailOperatorInstalled,
             VerifyKServeInstalled,
+            VerifyKuadrantInstalled,
         ]
