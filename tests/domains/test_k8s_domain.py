@@ -2,6 +2,7 @@
 
 from in_cluster_checks.domains.k8s_domain import K8sValidationDomain
 from in_cluster_checks.rules.k8s.cert_manager_validations import VerifyCertManagerInstalled
+from in_cluster_checks.rules.k8s.gateway_api_validations import VerifyGatewayApiInstalled
 from in_cluster_checks.rules.k8s.k8s_validations import (
     InfraPodsReadyAndRunning,
     NodesAreReady,
@@ -18,6 +19,7 @@ from in_cluster_checks.rules.k8s.k8s_validations import (
 )
 from in_cluster_checks.rules.k8s.kserve_validations import VerifyKServeInstalled
 from in_cluster_checks.rules.k8s.kuadrant_validations import VerifyKuadrantInstalled
+from in_cluster_checks.rules.k8s.leaderworkerset_validations import VerifyLeaderWorkerSetInstalled
 from in_cluster_checks.rules.k8s.sail_operator_validations import VerifySailOperatorInstalled
 from in_cluster_checks.rules.k8s.subscription_operator_validations import (
     VerifyAcmOperatorHealth,
@@ -39,7 +41,7 @@ def test_k8s_domain_rules():
     domain = K8sValidationDomain()
     rules = domain.get_rule_classes()
 
-    assert len(rules) == 24
+    assert len(rules) == 26
     assert InfraPodsReadyAndRunning in rules
     assert NodesAreReady in rules
     assert NodesCpuAndMemoryStatus in rules
@@ -61,3 +63,5 @@ def test_k8s_domain_rules():
     assert VerifySailOperatorInstalled in rules
     assert VerifyKServeInstalled in rules
     assert VerifyKuadrantInstalled in rules
+    assert VerifyGatewayApiInstalled in rules
+    assert VerifyLeaderWorkerSetInstalled in rules

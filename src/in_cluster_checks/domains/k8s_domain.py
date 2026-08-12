@@ -9,6 +9,7 @@ from typing import List
 
 from in_cluster_checks.core.domain import RuleDomain
 from in_cluster_checks.rules.k8s.cert_manager_validations import VerifyCertManagerInstalled
+from in_cluster_checks.rules.k8s.gateway_api_validations import VerifyGatewayApiInstalled
 from in_cluster_checks.rules.k8s.k8s_validations import (  # AllPodsReadyAndRunning disabled (PDRIVE-806)
     AllDeploymentsAvailable,
     AllStatefulsetsReady,
@@ -28,6 +29,7 @@ from in_cluster_checks.rules.k8s.k8s_validations import (  # AllPodsReadyAndRunn
 )
 from in_cluster_checks.rules.k8s.kserve_validations import VerifyKServeInstalled
 from in_cluster_checks.rules.k8s.kuadrant_validations import VerifyKuadrantInstalled
+from in_cluster_checks.rules.k8s.leaderworkerset_validations import VerifyLeaderWorkerSetInstalled
 from in_cluster_checks.rules.k8s.sail_operator_validations import VerifySailOperatorInstalled
 from in_cluster_checks.rules.k8s.subscription_operator_validations import (
     VerifyAcmOperatorHealth,
@@ -82,4 +84,6 @@ class K8sValidationDomain(RuleDomain):
             VerifySailOperatorInstalled,
             VerifyKServeInstalled,
             VerifyKuadrantInstalled,
+            VerifyGatewayApiInstalled,
+            VerifyLeaderWorkerSetInstalled,
         ]
