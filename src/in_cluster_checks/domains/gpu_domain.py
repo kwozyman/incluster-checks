@@ -8,7 +8,11 @@ ported from opendatahub-io/rhaii-cluster-validation.
 from typing import List
 
 from in_cluster_checks.core.domain import RuleDomain
-from in_cluster_checks.rules.gpu.gpu_validations import VerifyGpuDriverInstalled, VerifyGpuEccErrorsAbsent
+from in_cluster_checks.rules.gpu.gpu_validations import (
+    VerifyGpuDriverInstalled,
+    VerifyGpuEccErrorsAbsent,
+    VerifyGpuNodeLabelPresent,
+)
 from in_cluster_checks.rules.gpu.rdma_validations import VerifyRdmaDevicesPresent, VerifyRdmaNicStatus
 
 
@@ -32,6 +36,7 @@ class GpuValidationDomain(RuleDomain):
             List of Rule classes
         """
         return [
+            VerifyGpuNodeLabelPresent,
             VerifyGpuDriverInstalled,
             VerifyGpuEccErrorsAbsent,
             VerifyRdmaDevicesPresent,

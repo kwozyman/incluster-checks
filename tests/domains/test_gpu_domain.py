@@ -4,6 +4,7 @@ from in_cluster_checks.domains.gpu_domain import GpuValidationDomain
 from in_cluster_checks.rules.gpu.gpu_validations import (
     VerifyGpuDriverInstalled,
     VerifyGpuEccErrorsAbsent,
+    VerifyGpuNodeLabelPresent,
 )
 from in_cluster_checks.rules.gpu.rdma_validations import (
     VerifyRdmaDevicesPresent,
@@ -22,7 +23,8 @@ def test_gpu_domain_rules():
     domain = GpuValidationDomain()
     rules = domain.get_rule_classes()
 
-    assert len(rules) == 4
+    assert len(rules) == 5
+    assert VerifyGpuNodeLabelPresent in rules
     assert VerifyGpuDriverInstalled in rules
     assert VerifyGpuEccErrorsAbsent in rules
     assert VerifyRdmaDevicesPresent in rules

@@ -12,10 +12,17 @@ import io
 from in_cluster_checks.core.rule import Rule
 from in_cluster_checks.core.rule_result import PrerequisiteResult, RuleResult
 from in_cluster_checks.utils.enums import Objectives
+from in_cluster_checks.utils.oc_api_utils import OcApiUtils
 from in_cluster_checks.utils.safe_cmd_string import SafeCmdString
 
 # Values reported by nvidia-smi for ECC error counters that don't indicate a real error
 _NON_ERROR_ECC_VALUES = {"0", "N/A", ""}
+
+# Node label indicating NVIDIA GPU hardware presence (set by the NVIDIA GPU
+# Operator / Node Feature Discovery).
+GPU_PRESENCE_LABEL = "nvidia.com/gpu.present"
+# Node allocatable resource indicating schedulable NVIDIA GPUs (set by the device plugin)
+GPU_RESOURCE_NAME = "nvidia.com/gpu"
 
 
 def _parse_csv_rows(output: str) -> list[list[str]]:
@@ -24,23 +31,124 @@ def _parse_csv_rows(output: str) -> list[list[str]]:
     return [[field.strip() for field in row] for row in reader if row]
 
 
+def _gpu_quantity(value) -> int:
+    """Parse a node allocatable/capacity GPU resource quantity (always a plain integer count)."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _get_node_gpu_signals(oc_api: OcApiUtils, node_name: str) -> tuple[bool, bool, int]:
+    """Look up a node via the cluster API and read its GPU label/resource signals.
+
+    Args:
+        oc_api: Cluster API accessor
+        node_name: Name of the node to look up
+
+    Returns:
+        Tuple of (node_found, has_gpu_label, gpu_resource_count)
+    """
+    node = oc_api.select_resources(f"node/{node_name}", single=True)
+    if not node:
+        return False, False, 0
+
+    labels = node.model.metadata.labels or {}
+    allocatable = node.model.status.allocatable or {}
+
+    has_gpu_label = labels.get(GPU_PRESENCE_LABEL) == "true"
+    gpu_resource_count = _gpu_quantity(allocatable.get(GPU_RESOURCE_NAME))
+    return True, has_gpu_label, gpu_resource_count
+
+
+class VerifyGpuNodeLabelPresent(Rule):
+    """Verify the node is labeled as a GPU node.
+
+    This is a standalone check of the Kubernetes-level GPU label/resource
+    state (set by the NVIDIA GPU Operator / Node Feature Discovery),
+    reported independently of whether nvidia-smi is reachable from within
+    the debug pod - see VerifyGpuDriverInstalled/VerifyGpuEccErrorsAbsent
+    below for the nvidia-smi based checks.
+    """
+
+    objective_hosts = [Objectives.ALL_NODES]
+    supported_profiles = {"llm-d-xks"}
+    unique_name = "verify_gpu_node_label_present"
+    title = "Verify node is labeled as a GPU node"
+
+    def __init__(self, host_executor, node_executors=None):
+        """Initialize the rule and its cluster API accessor (for node label/resource lookups)."""
+        super().__init__(host_executor, node_executors=node_executors)
+        self.oc_api = OcApiUtils(self)
+
+    def run_rule(self) -> RuleResult:
+        """Check the node's GPU label/resource state and report accordingly."""
+        node_name = self.get_host_name()
+        found, has_gpu_label, gpu_resource_count = _get_node_gpu_signals(self.oc_api, node_name)
+
+        if not found:
+            return RuleResult.failed(f"Node {node_name} could not be found via the cluster API")
+
+        if has_gpu_label:
+            return RuleResult.passed(f"Node is labeled as a GPU node ({GPU_PRESENCE_LABEL}=true)")
+
+        if gpu_resource_count > 0:
+            return RuleResult.warning(
+                f"Node has {gpu_resource_count} schedulable {GPU_RESOURCE_NAME} resource(s) "
+                f"but is missing the {GPU_PRESENCE_LABEL} label"
+            )
+
+        return RuleResult.not_applicable(f"Node {node_name} has no GPU labels/resources (not a GPU node)")
+
+
 class NvidiaGpuRule(Rule):
     """Base class for NVIDIA GPU hardware rules.
 
-    Only runs on nodes where `nvidia-smi` is available. AMD GPU nodes
-    (rocm-smi) are not covered by this rule - see rhaii-cluster-validation
-    for a reference implementation if AMD support is needed.
+    Applicability is determined by NVIDIA GPU labels/resources on the node
+    object (set by the NVIDIA GPU Operator / Node Feature Discovery), not
+    by probing for the nvidia-smi binary - some driver-container installs
+    don't expose nvidia-smi via `chroot /host`. If a node is identified as
+    a GPU node but nvidia-smi still isn't reachable, subclasses report that
+    as a WARNING rather than a hard failure or NOT_APPLICABLE. See
+    VerifyGpuNodeLabelPresent above for a standalone report of the
+    label/resource state itself.
+
+    AMD GPU nodes (rocm-smi) are not covered by this rule - see
+    rhaii-cluster-validation for a reference implementation if AMD support
+    is needed.
     """
 
     objective_hosts = [Objectives.ALL_NODES]
     supported_profiles = {"llm-d-xks"}
 
+    NVIDIA_SMI_NOT_AVAILABLE_MSG = (
+        "nvidia-smi is not available on this node (unable to verify from within the debug pod, "
+        "which can happen depending on how the NVIDIA driver container is installed), "
+        "even though the node was identified as a GPU node from its labels/resources"
+    )
+
+    def __init__(self, host_executor, node_executors=None):
+        """Initialize the rule and its cluster API accessor (for node label/resource lookups)."""
+        super().__init__(host_executor, node_executors=node_executors)
+        self.oc_api = OcApiUtils(self)
+
     def is_prerequisite_fulfilled(self) -> PrerequisiteResult:
-        """Check that nvidia-smi is available on this node."""
-        return_code, _, _ = self.run_cmd(SafeCmdString("which nvidia-smi"))
-        if return_code != 0:
-            return PrerequisiteResult.not_met("nvidia-smi is not available on this node (not an NVIDIA GPU node)")
+        """Check that this node is a GPU node, based on its labels/resources."""
+        node_name = self.get_host_name()
+        found, has_gpu_label, gpu_resource_count = _get_node_gpu_signals(self.oc_api, node_name)
+
+        if not found:
+            return PrerequisiteResult.not_met(f"Node {node_name} could not be found via the cluster API")
+
+        if not (has_gpu_label or gpu_resource_count > 0):
+            return PrerequisiteResult.not_met(f"Node {node_name} has no GPU labels/resources (not a GPU node)")
+
         return PrerequisiteResult.met()
+
+    def _is_nvidia_smi_available(self) -> bool:
+        """Check whether the nvidia-smi binary is reachable from this node."""
+        return_code, _, _ = self.run_cmd(SafeCmdString("which nvidia-smi"))
+        return return_code == 0
 
 
 class VerifyGpuDriverInstalled(NvidiaGpuRule):
@@ -55,6 +163,9 @@ class VerifyGpuDriverInstalled(NvidiaGpuRule):
 
     def run_rule(self) -> RuleResult:
         """Run nvidia-smi and validate the driver reports GPU information."""
+        if not self._is_nvidia_smi_available():
+            return RuleResult.warning(self.NVIDIA_SMI_NOT_AVAILABLE_MSG)
+
         return_code, out, err = self.run_cmd(self.DRIVER_QUERY_CMD)
         if return_code != 0:
             return RuleResult.failed(f"nvidia-smi failed: {(err or out).strip()}")
@@ -87,6 +198,9 @@ class VerifyGpuEccErrorsAbsent(NvidiaGpuRule):
 
     def run_rule(self) -> RuleResult:
         """Run nvidia-smi ECC query and check for uncorrectable errors."""
+        if not self._is_nvidia_smi_available():
+            return RuleResult.warning(self.NVIDIA_SMI_NOT_AVAILABLE_MSG)
+
         return_code, out, err = self.run_cmd(self.ECC_QUERY_CMD)
         if return_code != 0:
             # Some GPUs/drivers don't support ECC error queries - treat as a warning, not a failure.
