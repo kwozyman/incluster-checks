@@ -23,6 +23,14 @@ _NON_ERROR_ECC_VALUES = {"0", "N/A", ""}
 GPU_PRESENCE_LABEL = "nvidia.com/gpu.present"
 # Node allocatable resource indicating schedulable NVIDIA GPUs (set by the device plugin)
 GPU_RESOURCE_NAME = "nvidia.com/gpu"
+# Labels of NVIDIA GPU Operator pods that have nvidia-smi available via the NVIDIA
+# Container Toolkit runtime hook, checked in this order. The device plugin pod is
+# checked first since it's present even when the driver is pre-installed on the host
+# (e.g. GPU-optimized AMIs) and no driver daemonset pod is deployed at all.
+GPU_OPERATOR_POD_LABELS = (
+    {"app": "nvidia-device-plugin-daemonset"},
+    {"app": "nvidia-driver-daemonset"},
+)
 
 
 def _parse_csv_rows(output: str) -> list[list[str]]:
@@ -107,11 +115,17 @@ class NvidiaGpuRule(Rule):
     Applicability is determined by NVIDIA GPU labels/resources on the node
     object (set by the NVIDIA GPU Operator / Node Feature Discovery), not
     by probing for the nvidia-smi binary - some driver-container installs
-    don't expose nvidia-smi via `chroot /host`. If a node is identified as
-    a GPU node but nvidia-smi still isn't reachable, subclasses report that
-    as a WARNING rather than a hard failure or NOT_APPLICABLE. See
-    VerifyGpuNodeLabelPresent above for a standalone report of the
-    label/resource state itself.
+    don't expose nvidia-smi via `chroot /host`. See VerifyGpuNodeLabelPresent
+    above for a standalone report of the label/resource state itself.
+
+    nvidia-smi is run directly on the node when reachable via `chroot /host`.
+    Otherwise, subclasses fall back to running it inside an NVIDIA GPU
+    Operator pod (device plugin or driver daemonset) scheduled on this node,
+    via `oc exec` (no shell involved, since these are typically minimal
+    containers that may not have bash) - the NVIDIA Container Toolkit makes
+    nvidia-smi available in those pods regardless of how the driver itself
+    was installed. If nvidia-smi can't be reached either way, subclasses
+    report a WARNING rather than a hard failure or NOT_APPLICABLE.
 
     AMD GPU nodes (rocm-smi) are not covered by this rule - see
     rhaii-cluster-validation for a reference implementation if AMD support
@@ -122,9 +136,9 @@ class NvidiaGpuRule(Rule):
     supported_profiles = {"llm-d-xks"}
 
     NVIDIA_SMI_NOT_AVAILABLE_MSG = (
-        "nvidia-smi is not available on this node (unable to verify from within the debug pod, "
-        "which can happen depending on how the NVIDIA driver container is installed), "
-        "even though the node was identified as a GPU node from its labels/resources"
+        "nvidia-smi is not reachable on this node - neither directly (via the debug pod) nor "
+        "inside an NVIDIA GPU Operator pod (device plugin or driver daemonset) scheduled on "
+        "this node - even though the node was identified as a GPU node from its labels/resources"
     )
 
     def __init__(self, host_executor, node_executors=None):
@@ -146,9 +160,54 @@ class NvidiaGpuRule(Rule):
         return PrerequisiteResult.met()
 
     def _is_nvidia_smi_available(self) -> bool:
-        """Check whether the nvidia-smi binary is reachable from this node."""
+        """Check whether the nvidia-smi binary is reachable directly on this node."""
         return_code, _, _ = self.run_cmd(SafeCmdString("which nvidia-smi"))
         return return_code == 0
+
+    def _find_gpu_operator_pod(self) -> tuple[str, str] | None:
+        """Find an NVIDIA GPU Operator pod running on this node that has nvidia-smi
+        available (device plugin or driver daemonset - see GPU_OPERATOR_POD_LABELS).
+
+        Returns:
+            (namespace, pod_name) tuple of a Running GPU Operator pod on this node, or
+            None if no such pod could be found (e.g. the GPU Operator isn't installed).
+        """
+        node_name = self.get_host_name()
+        for labels in GPU_OPERATOR_POD_LABELS:
+            try:
+                pods = self.oc_api.get_pods(labels=labels)
+            except Exception as e:
+                self.logger.debug(f"Failed to search for GPU Operator pods with labels {labels}: {e}")
+                continue
+
+            for pod in pods:
+                if pod.model.spec.nodeName == node_name and pod.model.status.phase == "Running":
+                    return pod.namespace(), pod.name()
+
+        return None
+
+    def _run_nvidia_smi(self, cmd: SafeCmdString) -> tuple[int, str, str, str] | None:
+        """Run an nvidia-smi command, preferring the node itself and falling back to an
+        NVIDIA GPU Operator pod scheduled on this node.
+
+        Args:
+            cmd: nvidia-smi command to run
+
+        Returns:
+            (return_code, stdout, stderr, source) tuple, where source describes where the
+            command ran, or None if nvidia-smi could not be reached anywhere.
+        """
+        if self._is_nvidia_smi_available():
+            return_code, out, err = self.run_cmd(cmd)
+            return return_code, out, err, "on the node"
+
+        gpu_operator_pod = self._find_gpu_operator_pod()
+        if gpu_operator_pod is None:
+            return None
+
+        namespace, pod_name = gpu_operator_pod
+        return_code, out, err = self.oc_api.run_exec_cmd(namespace, pod_name, cmd)
+        return return_code, out, err, f"in GPU Operator pod {namespace}/{pod_name}"
 
 
 class VerifyGpuDriverInstalled(NvidiaGpuRule):
@@ -163,26 +222,28 @@ class VerifyGpuDriverInstalled(NvidiaGpuRule):
 
     def run_rule(self) -> RuleResult:
         """Run nvidia-smi and validate the driver reports GPU information."""
-        if not self._is_nvidia_smi_available():
+        result = self._run_nvidia_smi(self.DRIVER_QUERY_CMD)
+        if result is None:
             return RuleResult.warning(self.NVIDIA_SMI_NOT_AVAILABLE_MSG)
 
-        return_code, out, err = self.run_cmd(self.DRIVER_QUERY_CMD)
+        return_code, out, err, source = result
         if return_code != 0:
-            return RuleResult.failed(f"nvidia-smi failed: {(err or out).strip()}")
+            return RuleResult.failed(f"nvidia-smi failed ({source}): {(err or out).strip()}")
 
         try:
             rows = _parse_csv_rows(out)
         except csv.Error as e:
-            return RuleResult.failed(f"Failed to parse nvidia-smi driver output: {e}")
+            return RuleResult.failed(f"Failed to parse nvidia-smi driver output ({source}): {e}")
 
         if not rows or len(rows[0]) < 3:
-            return RuleResult.failed(f"nvidia-smi returned no GPU driver information: {out.strip()!r}")
+            return RuleResult.failed(f"nvidia-smi returned no GPU driver information ({source}): {out.strip()!r}")
 
         driver_version, gpu_name, memory_total = rows[0][:3]
         gpu_count = len(rows)
 
         return RuleResult.passed(
-            f"NVIDIA driver: {driver_version}, GPU: {gpu_name} ({memory_total} MiB), {gpu_count} GPU(s)"
+            f"NVIDIA driver: {driver_version}, GPU: {gpu_name} ({memory_total} MiB), "
+            f"{gpu_count} GPU(s) (checked {source})"
         )
 
 
@@ -198,18 +259,19 @@ class VerifyGpuEccErrorsAbsent(NvidiaGpuRule):
 
     def run_rule(self) -> RuleResult:
         """Run nvidia-smi ECC query and check for uncorrectable errors."""
-        if not self._is_nvidia_smi_available():
+        result = self._run_nvidia_smi(self.ECC_QUERY_CMD)
+        if result is None:
             return RuleResult.warning(self.NVIDIA_SMI_NOT_AVAILABLE_MSG)
 
-        return_code, out, err = self.run_cmd(self.ECC_QUERY_CMD)
+        return_code, out, err, source = result
         if return_code != 0:
             # Some GPUs/drivers don't support ECC error queries - treat as a warning, not a failure.
-            return RuleResult.warning(f"nvidia-smi ECC query failed: {(err or out).strip()}")
+            return RuleResult.warning(f"nvidia-smi ECC query failed ({source}): {(err or out).strip()}")
 
         try:
             rows = _parse_csv_rows(out)
         except csv.Error as e:
-            return RuleResult.failed(f"Failed to parse nvidia-smi ECC output: {e}")
+            return RuleResult.failed(f"Failed to parse nvidia-smi ECC output ({source}): {e}")
 
         errors_found = []
         for row in rows:
@@ -224,4 +286,4 @@ class VerifyGpuEccErrorsAbsent(NvidiaGpuRule):
                 "Uncorrectable ECC errors found: " + "; ".join(errors_found) + ". Replace GPU or contact cloud provider"
             )
 
-        return RuleResult.passed(f"No uncorrectable ECC errors on {len(rows)} GPU(s)")
+        return RuleResult.passed(f"No uncorrectable ECC errors on {len(rows)} GPU(s) (checked {source})")

@@ -22,6 +22,7 @@ Usage:
 
 import json
 import logging
+import shlex
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
@@ -562,6 +563,54 @@ class OcApiUtils:
         except Exception as e:
             # Return error without raising exception
             error_msg = f"Failed to rsh into pod {namespace}/{pod}: {str(e)}"
+            self.logger.error(error_msg)
+            return 1, "", error_msg
+
+    def run_exec_cmd(self, namespace: str, pod: str, command: SafeCmdString, timeout: int = 120) -> tuple:
+        """
+        Run a command directly in a pod using oc exec, with no shell involved.
+
+        Unlike run_rsh_cmd() (which wraps the command in `bash -c "..."`), this execs
+        the command's argv directly. Use this for simple commands that don't need shell
+        features (pipes, redirects, env var expansion) - it also works against minimal
+        containers that don't have bash installed.
+
+        Args:
+            namespace: Namespace where the pod is located
+            pod: Pod name
+            command: SafeCmdString object with command to execute in the pod
+            timeout: Timeout in seconds (default: 120)
+
+        Returns:
+            Tuple of (return_code, stdout, stderr)
+
+        Raises:
+            TypeError: If command is not a SafeCmdString instance
+        """
+        # Enforce SafeCmdString usage to prevent shell injection
+        if not isinstance(command, SafeCmdString):
+            raise TypeError(
+                f"run_exec_cmd() requires SafeCmdString, got {type(command).__name__}. "
+                f"Use: SafeCmdString('cmd {{var}}').format(var=value)"
+            )
+
+        # Split into argv directly - no shell is involved, so no quoting is needed
+        argv = shlex.split(str(command))
+
+        self.operator._add_cmd_to_log(f"oc -n {namespace} exec {pod} -- {' '.join(argv)}")
+        try:
+            with oc.timeout(timeout):
+                with oc.project(namespace):
+                    result = oc.invoke(
+                        "exec",
+                        cmd_args=[pod, "--", *argv],
+                        auto_raise=False,
+                    )
+            return result.status(), result.out(), result.err()
+
+        except Exception as e:
+            # Return error without raising exception
+            error_msg = f"Failed to exec into pod {namespace}/{pod}: {str(e)}"
             self.logger.error(error_msg)
             return 1, "", error_msg
 

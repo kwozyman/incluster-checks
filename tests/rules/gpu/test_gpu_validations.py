@@ -23,9 +23,32 @@ def _fake_node(labels: dict | None = None, allocatable: dict | None = None) -> M
     return node
 
 
+def _fake_pod(
+    node_name: str,
+    phase: str = "Running",
+    namespace: str = "gpu-operator",
+    name: str = "nvidia-device-plugin-daemonset-abc123",
+) -> Mock:
+    """Build a fake openshift_client pod object scheduled on the given node."""
+    pod = Mock()
+    pod.model.spec.nodeName = node_name
+    pod.model.status.phase = phase
+    pod.namespace.return_value = namespace
+    pod.name.return_value = name
+    return pod
+
+
 _GPU_LABEL_NODE = _fake_node(labels={"nvidia.com/gpu.present": "true"})
 _GPU_RESOURCE_NODE = _fake_node(allocatable={"nvidia.com/gpu": "4"})
 _NON_GPU_NODE = _fake_node(labels={"kubernetes.io/hostname": "worker-0"}, allocatable={"cpu": "16"})
+
+_GPU_OPERATOR_POD_NAMESPACE = "gpu-operator"
+_GPU_OPERATOR_POD_NAME = "nvidia-device-plugin-daemonset-abc123"
+_GPU_OPERATOR_POD_ON_TEST_NODE = _fake_pod(
+    node_name="test-node", namespace=_GPU_OPERATOR_POD_NAMESPACE, name=_GPU_OPERATOR_POD_NAME
+)
+_GPU_OPERATOR_POD_ON_OTHER_NODE = _fake_pod(node_name="other-node")
+_NO_GPU_OPERATOR_PODS: list = []
 
 
 class TestVerifyGpuNodeLabelPresent(RuleTestBase):
@@ -109,6 +132,16 @@ class TestVerifyGpuDriverInstalled(RuleTestBase):
                 driver_cmd: CmdOutput(multi_gpu_output),
             },
         ),
+        RuleScenarioParams(
+            "nvidia-smi unavailable on the node, falls back to GPU Operator pod",
+            {
+                WHICH_NVIDIA_SMI_CMD: CmdOutput("", return_code=1),
+            },
+            rsh_cmd_output_dict={
+                (_GPU_OPERATOR_POD_NAMESPACE, _GPU_OPERATOR_POD_NAME, driver_cmd): CmdOutput(single_gpu_output),
+            },
+            tested_object_mock_dict={"oc_api.get_pods": Mock(return_value=[_GPU_OPERATOR_POD_ON_TEST_NODE])},
+        ),
     ]
 
     scenario_failed = [
@@ -118,16 +151,25 @@ class TestVerifyGpuDriverInstalled(RuleTestBase):
                 WHICH_NVIDIA_SMI_CMD: CmdOutput("/usr/bin/nvidia-smi"),
                 driver_cmd: CmdOutput("", return_code=1, err="NVIDIA-SMI has failed"),
             },
-            failed_msg="nvidia-smi failed: NVIDIA-SMI has failed",
+            failed_msg="nvidia-smi failed (on the node): NVIDIA-SMI has failed",
         ),
     ]
 
     scenario_warning = [
         RuleScenarioParams(
-            "nvidia-smi binary not available on this GPU node",
+            "nvidia-smi not available on the node and no GPU Operator pod found",
             {
                 WHICH_NVIDIA_SMI_CMD: CmdOutput("", return_code=1),
             },
+            tested_object_mock_dict={"oc_api.get_pods": Mock(return_value=_NO_GPU_OPERATOR_PODS)},
+            failed_msg=VerifyGpuDriverInstalled.NVIDIA_SMI_NOT_AVAILABLE_MSG,
+        ),
+        RuleScenarioParams(
+            "GPU Operator pod exists but not scheduled on this node",
+            {
+                WHICH_NVIDIA_SMI_CMD: CmdOutput("", return_code=1),
+            },
+            tested_object_mock_dict={"oc_api.get_pods": Mock(return_value=[_GPU_OPERATOR_POD_ON_OTHER_NODE])},
             failed_msg=VerifyGpuDriverInstalled.NVIDIA_SMI_NOT_AVAILABLE_MSG,
         ),
     ]
@@ -197,6 +239,16 @@ class TestVerifyGpuEccErrorsAbsent(RuleTestBase):
                 ecc_cmd: CmdOutput("0, N/A"),
             },
         ),
+        RuleScenarioParams(
+            "nvidia-smi unavailable on the node, falls back to GPU Operator pod",
+            {
+                WHICH_NVIDIA_SMI_CMD: CmdOutput("", return_code=1),
+            },
+            rsh_cmd_output_dict={
+                (_GPU_OPERATOR_POD_NAMESPACE, _GPU_OPERATOR_POD_NAME, ecc_cmd): CmdOutput("0, 0"),
+            },
+            tested_object_mock_dict={"oc_api.get_pods": Mock(return_value=[_GPU_OPERATOR_POD_ON_TEST_NODE])},
+        ),
     ]
 
     scenario_failed = [
@@ -220,13 +272,14 @@ class TestVerifyGpuEccErrorsAbsent(RuleTestBase):
                 WHICH_NVIDIA_SMI_CMD: CmdOutput("/usr/bin/nvidia-smi"),
                 ecc_cmd: CmdOutput("", return_code=1, err="ECC query not supported"),
             },
-            failed_msg="nvidia-smi ECC query failed: ECC query not supported",
+            failed_msg="nvidia-smi ECC query failed (on the node): ECC query not supported",
         ),
         RuleScenarioParams(
-            "nvidia-smi binary not available on this GPU node",
+            "nvidia-smi not available on the node and no GPU Operator pod found",
             {
                 WHICH_NVIDIA_SMI_CMD: CmdOutput("", return_code=1),
             },
+            tested_object_mock_dict={"oc_api.get_pods": Mock(return_value=_NO_GPU_OPERATOR_PODS)},
             failed_msg=VerifyGpuEccErrorsAbsent.NVIDIA_SMI_NOT_AVAILABLE_MSG,
         ),
     ]

@@ -54,6 +54,7 @@ class ScenarioParams:
             scenario_title: Description of the test scenario
             cmd_input_output_dict: Map of {command: CmdOutput} for run_cmd()
             rsh_cmd_output_dict: Map of {(namespace, pod, command): CmdOutput} for run_rsh_cmd()
+                and run_exec_cmd() (shared mapping - both take the same arguments)
                 Example: {("openshift-ovn-kubernetes", "ovnkube-node-abc", "ovn-nbctl ls-list"): CmdOutput(...)}
             oc_cmd_output_dict: Map of {(command, tuple(args)): CmdOutput} for run_oc_command()
                 Example: {("get", ("pv", "-o", "json")): CmdOutput(...)}
@@ -146,6 +147,9 @@ class OperatorTestBase:
         # Mock oc_api methods for OrchestratorRule and OrchestratorDataCollector
         if hasattr(operator_object, 'oc_api'):
             operator_object.oc_api.run_rsh_cmd = Mock(side_effect=self._run_rsh_cmd_side_effects)
+            # run_exec_cmd shares the same (namespace, pod, command) -> CmdOutput mapping as
+            # run_rsh_cmd - only the underlying invocation (shell vs. direct exec) differs.
+            operator_object.oc_api.run_exec_cmd = Mock(side_effect=self._run_rsh_cmd_side_effects)
             operator_object.oc_api.run_oc_command = Mock(side_effect=self._run_oc_command_side_effects)
 
         # Mock run_data_collector
@@ -233,7 +237,8 @@ class OperatorTestBase:
 
     def _run_rsh_cmd_side_effects(self, namespace: str, pod: str, command: str, timeout: int = 120):
         """
-        Mock side effect for run_rsh_cmd().
+        Mock side effect for run_rsh_cmd() and run_exec_cmd() (shared - both take the
+        same (namespace, pod, command) arguments and only differ in shell involvement).
 
         Args:
             namespace: Namespace where pod is located
@@ -246,7 +251,7 @@ class OperatorTestBase:
         """
         if not isinstance(command, SafeCmdString):
             raise TypeError(
-                f"run_rsh_cmd() requires SafeCmdString, got {type(command).__name__}.\n"
+                f"run_rsh_cmd()/run_exec_cmd() requires SafeCmdString, got {type(command).__name__}.\n"
                 f"Use: SafeCmdString('your command') or SafeCmdString('cmd {{var}}').format(var=value)"
             )
         # Convert SafeCmdString to str for dictionary lookup
@@ -254,7 +259,7 @@ class OperatorTestBase:
         key = (namespace, pod, command_str)
 
         assert key in self.rsh_cmd_to_output_dict, (
-            f"RSH command {key} not mocked. "
+            f"RSH/exec command {key} not mocked. "
             f"Please add it to rsh_cmd_output_dict in test scenario."
         )
 
